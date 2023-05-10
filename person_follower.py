@@ -16,8 +16,14 @@ maxDutyCycle   = 12
 panServoPin    = 17
 dutyCycleStep  = 0.2
 pixelThreshold = 60
+homeDutyCycle  = 8
+maxFramesWithoutHuman = 20
 
-currentPanDutyCycle = 8.0
+#
+#   GLOBALS
+#
+currentPanDutyCycle = homeDutyCycle #Keeps track of duty cycle
+noHumanCount = 0
 
 CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
 	"bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
@@ -59,84 +65,90 @@ panServo.start(currentPanDutyCycle)
 #   SOCKET CONNECTION
 #   TAKE FRAME, DETECT PEOPLE, SEND FRAME
 #
-while True:
-    client_socket,addr = server_socket.accept()
-    print("GOT CONNECTION FROM: ", addr)
 
-    #Check if socket active
-    if client_socket:
-        vid = Picamera2()
-        vid.configure(vid.create_preview_configuration(main={"format": 'RGB888', "size": (width, height)}))
-        vid.start()
-        #set properties
-        #vid.set(3, width)
-        #vid.set(4, height)
-        while(True):
-            #
-            #   GET IMAGE
-            #
-            image = vid.capture_array()
-            
-            if(True):
-                (h, w) = image.shape[:2]
-                blob = cv2.dnn.blobFromImage(cv2.resize(image, (300, 300)), 0.007843,
-	                (300, 300), 127.5)
+client_socket,addr = server_socket.accept()
+print("GOT CONNECTION FROM: ", addr)
 
-                #
-                #   COMPUTING OBJECT DETECTION
-                #
-                net.setInput(blob)
-                detections = net.forward()
+#Check if socket active
+if client_socket:
+    vid = Picamera2()
+    #Set width, height in pixels and format should be RGB888 for the SSD network.
+    vid.configure(vid.create_preview_configuration(main={"format": 'RGB888', "size": (width, height)}))
+    vid.start()
+ 
+    
+    #
+    #   GET IMAGE
+    #
+    # (heightxwidhtx3)
+    while(True):
+        image = vid.capture_array()
+        print(image.shape)
+        (h, w) = image.shape[:2]
+        #Make blob with correct parameters for our deep neural
+        blob = cv2.dnn.blobFromImage(cv2.resize(image, (300, 300)), 0.007843,
+	        (300, 300), 127.5)
 
-                highestConfidence   = 0
-                highestConfidenceX  = 0
-                highestConfidencey  = 0
+        #
+        #   COMPUTING OBJECT DETECTION
+        #
+        net.setInput(blob)
+        #Do detection of frame:
+        detections = net.forward()
 
-                # EACH FRAME
-                for i in np.arange(0, detections.shape[2]):
-                    confidence = detections[0, 0, i, 2]
-                    if confidence > confidence_min:
-                        idx = int(detections[0, 0, i, 1])
+        highestConfidence   = 0
+        highestConfidenceX  = 0
+        highestConfidencey  = 0
+
+        # Go through detections
+        for i in np.arange(0, detections.shape[2]):
+            confidence = detections[0, 0, i, 2]
+            if confidence > confidence_min:
+
+                idx = int(detections[0, 0, i, 1])
                     
-                        box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-                        (startX, startY, endX, endY) = box.astype("int")
+                box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                (startX, startY, endX, endY) = box.astype("int")
 
-                        if confidence > highestConfidence and idx == 15:
-                            highestConfidence = confidence
-                            # Centre x of box
-                            highestConfidenceX = ((endX - startX) / 2) + startX
-                            highestConfidencey = ((endY - startY) / 2) + startY
-                            print(CLASSES[idx], idx, confidence, "X value: ", highestConfidenceX)
+                if confidence > highestConfidence and idx == 15:
+                    highestConfidence = confidence
+                    # Centre x of box
+                    highestConfidenceX = ((endX - startX) / 2) + startX
+                    highestConfidencey = ((endY - startY) / 2) + startY
+                    print(CLASSES[idx], idx, confidence, "X value: ", highestConfidenceX)
                         
 
-                        label = "{}: {:.2f}%".format(CLASSES[idx], confidence * 100)
-                        cv2.rectangle(image, (startX, startY), (endX, endY), COLORS[idx], 2)
-                        y = startY - 15 if startY -15 > 15 else startY + 15
-                        cv2.putText(image, label, (startX, y), cv2.FONT_HERSHEY_PLAIN, 2, COLORS[idx], 2)
+                label = "{}: {:.2f}%".format(CLASSES[idx], confidence * 100)
+                cv2.rectangle(image, (startX, startY), (endX, endY), COLORS[idx], 2)
+                y = startY - 15 if startY -15 > 15 else startY + 15
+                cv2.putText(image, label, (startX, y), cv2.FONT_HERSHEY_PLAIN, 2, COLORS[idx], 2)
 
-                        #
-                        #   ADJUST CAMERA
-                        #
-                        if highestConfidenceX > 0:
-                            if highestConfidenceX > width / 2 and highestConfidenceX - (width / 2) > pixelThreshold:
-                                if currentPanDutyCycle + dutyCycleStep < maxDutyCycle:
-                                    currentPanDutyCycle = currentPanDutyCycle + dutyCycleStep
-                                    panServo.change_duty_cycle(currentPanDutyCycle)
-                            elif highestConfidenceX < width / 2 and (width / 2) - highestConfidenceX > pixelThreshold:
-                                if currentPanDutyCycle - dutyCycleStep > minDutyCycle:
-                                    currentPanDutyCycle = currentPanDutyCycle - dutyCycleStep
-                                    panServo.change_duty_cycle(currentPanDutyCycle)
+        #
+        #   ADJUST CAMERA
+        #
+        # Change pan:
+        if highestConfidenceX > 0:
+            noHumanCount = 0
+            if highestConfidenceX > width / 2 and highestConfidenceX - (width / 2) > pixelThreshold:
+                if currentPanDutyCycle + dutyCycleStep < maxDutyCycle:
+                    currentPanDutyCycle = currentPanDutyCycle + dutyCycleStep
+                    panServo.change_duty_cycle(currentPanDutyCycle)
+            elif highestConfidenceX < width / 2 and (width / 2) - highestConfidenceX > pixelThreshold:
+                if currentPanDutyCycle - dutyCycleStep > minDutyCycle:
+                    currentPanDutyCycle = currentPanDutyCycle - dutyCycleStep
+                    panServo.change_duty_cycle(currentPanDutyCycle)
+        elif highestConfidenceX == 0: 
+            noHumanCount = noHumanCount + 1
 
-                # Reset Values
-                highestConfidence  = 0
-                highestConfidenceX = 0
-                highestConfidencey = 7
+        if noHumanCount > maxFramesWithoutHuman:
+            currentPanDutyCycle = homeDutyCycle
+            panServo.change_duty_cycle(currentPanDutyCycle)
 
-
-                #
-                #   SEND TO NETWORK
-                #
-                a = pickle.dumps(image)
-                message = struct.pack("Q",len(a))+a
-                client_socket.sendall(message)
+        #
+        #   SEND TO NETWORK
+        #
+        a = pickle.dumps(image)
+        #convert all to unsinged long long
+        message = struct.pack("Q",len(a))+a
+        client_socket.sendall(message)
 
